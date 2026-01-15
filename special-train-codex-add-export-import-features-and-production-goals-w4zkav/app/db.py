@@ -283,15 +283,6 @@ def init_db() -> None:
     with connect() as conn:
         conn.executescript(schema)
         _migrate_production_goals(conn)
-        conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
-        _ensure_columns(conn, "tools", {
-            "stock_qty": "INTEGER NOT NULL DEFAULT 0",
-            "inserts_per_tool": "INTEGER NOT NULL DEFAULT 1",
-        })
-        _ensure_columns(conn, "tool_entries", {
-            "tool_life": "REAL NOT NULL DEFAULT 0.0",
-            "production_qty": "REAL NOT NULL DEFAULT 0.0",
-        })
 
 
 def _migrate_production_goals(conn: sqlite3.Connection) -> None:
@@ -317,6 +308,15 @@ def _migrate_production_goals(conn: sqlite3.Connection) -> None:
         DROP TABLE production_goals_old;
         """
     )
+        conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
+        _ensure_columns(conn, "tools", {
+            "stock_qty": "INTEGER NOT NULL DEFAULT 0",
+            "inserts_per_tool": "INTEGER NOT NULL DEFAULT 1",
+        })
+        _ensure_columns(conn, "tool_entries", {
+            "tool_life": "REAL NOT NULL DEFAULT 0.0",
+            "production_qty": "REAL NOT NULL DEFAULT 0.0",
+        })
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Dict[str, str]) -> None:
