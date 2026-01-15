@@ -283,19 +283,6 @@ def init_db() -> None:
     with connect() as conn:
         conn.executescript(schema)
         _migrate_production_goals(conn)
-        _post_init_schema(conn)
-
-
-def _post_init_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
-    _ensure_columns(conn, "tools", {
-        "stock_qty": "INTEGER NOT NULL DEFAULT 0",
-        "inserts_per_tool": "INTEGER NOT NULL DEFAULT 1",
-    })
-    _ensure_columns(conn, "tool_entries", {
-        "tool_life": "REAL NOT NULL DEFAULT 0.0",
-        "production_qty": "REAL NOT NULL DEFAULT 0.0",
-    })
 
 
 def _migrate_production_goals(conn: sqlite3.Connection) -> None:
@@ -321,6 +308,15 @@ def _migrate_production_goals(conn: sqlite3.Connection) -> None:
         DROP TABLE production_goals_old;
         """
     )
+        conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
+        _ensure_columns(conn, "tools", {
+            "stock_qty": "INTEGER NOT NULL DEFAULT 0",
+            "inserts_per_tool": "INTEGER NOT NULL DEFAULT 1",
+        })
+        _ensure_columns(conn, "tool_entries", {
+            "tool_life": "REAL NOT NULL DEFAULT 0.0",
+            "production_qty": "REAL NOT NULL DEFAULT 0.0",
+        })
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Dict[str, str]) -> None:
@@ -893,6 +889,33 @@ def deactivate_downtime_code(code: str) -> None:
             "UPDATE downtime_codes SET is_active=0, updated_at=datetime('now') WHERE code=?",
             (code,),
         )
+
+
+def replace_shift_downtime_entries(entry_id: str, entries: List[Dict[str, Any]]) -> None:
+    entry_id = str(entry_id or "").strip()
+    if not entry_id:
+        return
+    with connect() as conn:
+        conn.execute("DELETE FROM shift_downtime_entries WHERE tool_entry_id=?", (entry_id,))
+        for entry in entries:
+            conn.execute(
+                """
+                INSERT INTO shift_downtime_entries(
+                    tool_entry_id,
+                    downtime_code,
+                    downtime_minutes,
+                    downtime_occurrences,
+                    downtime_comments
+                ) VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    entry.get("code", ""),
+                    float(entry.get("minutes", 0.0) or 0.0),
+                    int(entry.get("occurrences", 0) or 0),
+                    entry.get("comments", ""),
+                ),
+            )
 
 
 def replace_shift_downtime_entries(entry_id: str, entries: List[Dict[str, Any]]) -> None:
