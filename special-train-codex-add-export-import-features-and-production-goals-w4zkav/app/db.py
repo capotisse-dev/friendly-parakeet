@@ -918,6 +918,33 @@ def replace_shift_downtime_entries(entry_id: str, entries: List[Dict[str, Any]])
             )
 
 
+def replace_shift_downtime_entries(entry_id: str, entries: List[Dict[str, Any]]) -> None:
+    entry_id = str(entry_id or "").strip()
+    if not entry_id:
+        return
+    with connect() as conn:
+        conn.execute("DELETE FROM shift_downtime_entries WHERE tool_entry_id=?", (entry_id,))
+        for entry in entries:
+            conn.execute(
+                """
+                INSERT INTO shift_downtime_entries(
+                    tool_entry_id,
+                    downtime_code,
+                    downtime_minutes,
+                    downtime_occurrences,
+                    downtime_comments
+                ) VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    entry.get("code", ""),
+                    float(entry.get("minutes", 0.0) or 0.0),
+                    int(entry.get("occurrences", 0) or 0),
+                    entry.get("comments", ""),
+                ),
+            )
+
+
 def upsert_operator_entry(entry: Dict[str, Any]) -> None:
     if not entry.get("id"):
         raise ValueError("Entry must include id")
