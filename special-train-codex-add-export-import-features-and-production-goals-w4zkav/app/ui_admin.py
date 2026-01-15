@@ -609,7 +609,12 @@ class AdminUI(tk.Frame):
         self.shift_report_cache = {}
         for entry, entry_dt in filtered:
             line = entry.get("line", "")
-            target = get_production_goal(line)
+            target = get_production_goal(
+                line,
+                cell=entry.get("cell", ""),
+                machine=entry.get("machine", ""),
+                part_number=entry.get("part_number", ""),
+            )
             production_qty = float(entry.get("production_qty", 0.0) or 0.0)
             downtime = float(entry.get("downtime_mins", 0.0) or 0.0)
 
