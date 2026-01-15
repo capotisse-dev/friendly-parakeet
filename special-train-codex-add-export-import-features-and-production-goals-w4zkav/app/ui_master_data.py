@@ -28,6 +28,9 @@ from .db import (
     deactivate_downtime_code,
     list_production_goals,
     upsert_production_goal,
+    list_cells_for_line,
+    list_machines_for_cell,
+    list_parts_for_line,
 )
 from .audit import log_audit
 from .config import DB_PATH
@@ -709,7 +712,7 @@ class MasterDataUI(tk.Frame):
 
         tk.Label(
             top,
-            text="Production Goals (Target per Line)",
+            text="Production Goals",
             bg=self.controller.colors["bg"],
             fg=self.controller.colors["fg"],
             font=("Arial", 14, "bold"),
@@ -730,6 +733,38 @@ class MasterDataUI(tk.Frame):
             width=18,
         )
         self.goal_line_combo.pack(side="left", padx=6)
+        self.goal_line_combo.bind("<<ComboboxSelected>>", self._refresh_goal_dependent_fields)
+
+        tk.Label(form, text="Cell:", bg=self.controller.colors["bg"], fg=self.controller.colors["fg"]).pack(side="left")
+        self.goal_cell_var = tk.StringVar(value="")
+        self.goal_cell_combo = ttk.Combobox(
+            form,
+            values=[],
+            textvariable=self.goal_cell_var,
+            width=16,
+        )
+        self.goal_cell_combo.pack(side="left", padx=6)
+        self.goal_cell_combo.bind("<<ComboboxSelected>>", self._refresh_goal_machine_fields)
+
+        tk.Label(form, text="Machine:", bg=self.controller.colors["bg"], fg=self.controller.colors["fg"]).pack(side="left")
+        self.goal_machine_var = tk.StringVar(value="")
+        self.goal_machine_combo = ttk.Combobox(
+            form,
+            values=[],
+            textvariable=self.goal_machine_var,
+            width=16,
+        )
+        self.goal_machine_combo.pack(side="left", padx=6)
+
+        tk.Label(form, text="Part #:", bg=self.controller.colors["bg"], fg=self.controller.colors["fg"]).pack(side="left")
+        self.goal_part_var = tk.StringVar(value="")
+        self.goal_part_combo = ttk.Combobox(
+            form,
+            values=[],
+            textvariable=self.goal_part_var,
+            width=16,
+        )
+        self.goal_part_combo.pack(side="left", padx=6)
 
         tk.Label(form, text="Target:", bg=self.controller.colors["bg"], fg=self.controller.colors["fg"]).pack(side="left")
         self.goal_target_var = tk.StringVar(value="")
@@ -738,11 +773,16 @@ class MasterDataUI(tk.Frame):
         self.goal_save_btn = tk.Button(form, text="Save Goal", command=self.save_goal, bg="#28a745", fg="white")
         self.goal_save_btn.pack(side="left", padx=8)
 
-        cols = ("line", "target")
+        cols = ("line", "cell", "machine", "part", "target")
         self.goal_tree = ttk.Treeview(parent, columns=cols, show="headings", height=12)
         for c in cols:
             self.goal_tree.heading(c, text=c.upper())
-            self.goal_tree.column(c, width=180 if c == "line" else 140)
+            if c == "target":
+                self.goal_tree.column(c, width=120)
+            elif c == "part":
+                self.goal_tree.column(c, width=160)
+            else:
+                self.goal_tree.column(c, width=160)
         self.goal_tree.pack(fill="both", expand=True, padx=10, pady=10)
         self.goal_tree.bind("<<TreeviewSelect>>", self._load_selected_goal)
 
@@ -750,21 +790,61 @@ class MasterDataUI(tk.Frame):
         if self.readonly:
             self.goal_save_btn.configure(state="disabled")
 
+    def _refresh_goal_dependent_fields(self, event=None):
+        line = self.goal_line_var.get().strip()
+        cells = list_cells_for_line(line)
+        self.goal_cell_combo.configure(values=cells)
+        if cells:
+            self.goal_cell_var.set(cells[0])
+        else:
+            self.goal_cell_var.set("")
+        parts = list_parts_for_line(line)
+        self.goal_part_combo.configure(values=parts)
+        if parts:
+            self.goal_part_var.set(parts[0])
+        else:
+            self.goal_part_var.set("")
+        self._refresh_goal_machine_fields()
+
+    def _refresh_goal_machine_fields(self, event=None):
+        line = self.goal_line_var.get().strip()
+        cell = self.goal_cell_var.get().strip()
+        machines = list_machines_for_cell(line, cell)
+        self.goal_machine_combo.configure(values=machines)
+        if machines:
+            self.goal_machine_var.set(machines[0])
+        else:
+            self.goal_machine_var.set("")
+
     def refresh_goals(self):
         if hasattr(self, "goal_tree"):
             for i in self.goal_tree.get_children():
                 self.goal_tree.delete(i)
             for goal in list_production_goals():
-                self.goal_tree.insert("", "end", values=(goal.get("line", ""), goal.get("target", 0.0)))
+                self.goal_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        goal.get("line", ""),
+                        goal.get("cell", ""),
+                        goal.get("machine", ""),
+                        goal.get("part_number", ""),
+                        goal.get("target", 0.0),
+                    ),
+                )
         if hasattr(self, "goal_line_combo"):
             self.goal_line_combo.configure(values=list_lines())
+            self._refresh_goal_dependent_fields()
 
     def _load_selected_goal(self, event=None):
         sel = self.goal_tree.selection()
         if not sel:
             return
-        line, target = self.goal_tree.item(sel[0], "values")
+        line, cell, machine, part, target = self.goal_tree.item(sel[0], "values")
         self.goal_line_var.set(line)
+        self.goal_cell_var.set(cell)
+        self.goal_machine_var.set(machine)
+        self.goal_part_var.set(part)
         self.goal_target_var.set(str(target))
 
     def save_goal(self):
@@ -774,7 +854,13 @@ class MasterDataUI(tk.Frame):
         if not line:
             messagebox.showerror("Error", "Select a line.")
             return
+        cell = self.goal_cell_var.get().strip()
+        machine = self.goal_machine_var.get().strip()
+        part_number = self.goal_part_var.get().strip()
         target = safe_float(self.goal_target_var.get(), 0.0)
-        upsert_production_goal(line, target)
-        log_audit(self.controller.user, f"Updated production goal for {line}: {target}")
+        upsert_production_goal(line, target, cell=cell, machine=machine, part_number=part_number)
+        log_audit(
+            self.controller.user,
+            f"Updated production goal for {line} {cell} {machine} {part_number}: {target}",
+        )
         self.refresh_goals()
