@@ -7,7 +7,15 @@ from datetime import datetime
 
 from .ui_common import HeaderFrame
 from .storage import safe_int, safe_float
-from .db import list_downtime_codes, list_lines, upsert_operator_entry, upsert_tool_entry
+from .db import (
+    list_downtime_codes,
+    list_lines,
+    list_cells_for_line,
+    list_machines_for_cell,
+    list_parts_for_line,
+    replace_shift_downtime_entries,
+    upsert_tool_entry,
+)
 from .audit import log_audit
 
 
@@ -38,15 +46,10 @@ class OperatorUI(tk.Frame):
 
         style = {"bg": self.controller.colors["bg"], "fg": self.controller.colors["fg"]}
 
-    def _toggle_downtime_fields(self, event=None):
-        enabled = bool(self.downtime_var.get())
-        state = "normal" if enabled else "disabled"
-        for entry in (self.dt_total_entry, self.dt_occ_entry, self.dt_comment_entry):
-            entry.configure(state=state)
-            if not enabled:
-                entry.delete(0, "end")
+    def _build_shift_production(self, parent):
+        body = tk.Frame(parent, bg=self.controller.colors["bg"], padx=20, pady=20)
+        body.pack(fill="both", expand=True)
 
-    def _build_shift_production(self, body):
         style = {"bg": self.controller.colors["bg"], "fg": self.controller.colors["fg"]}
 
         tk.Label(body, text="Shift Production", font=("Arial", 16, "bold"), **style).grid(
@@ -57,10 +60,10 @@ class OperatorUI(tk.Frame):
         line_options = list_lines()
         if not line_options:
             line_options = ["U725", "JL"]
-        self.line_var = tk.StringVar(value=self.controller.user_line or "Both")
-        self.line_cb = ttk.Combobox(body, values=line_options, state="readonly", width=18)
-        if self.line_var.get() in line_options:
-            self.line_cb.set(self.line_var.get())
+        self.shift_line_var = tk.StringVar(value=self.controller.user_line or line_options[0])
+        self.shift_line_cb = ttk.Combobox(body, values=line_options, state="readonly", width=18)
+        if self.shift_line_var.get() in line_options:
+            self.shift_line_cb.set(self.shift_line_var.get())
         else:
             self.shift_line_cb.current(0)
         self.shift_line_cb.grid(row=1, column=1, sticky="w")
@@ -92,7 +95,22 @@ class OperatorUI(tk.Frame):
         self.shift_qty_entry = tk.Entry(body, width=18)
         self.shift_qty_entry.grid(row=3, column=3, sticky="w")
 
-        tk.Label(body, text="Downtime Code:", **style).grid(row=4, column=0, sticky="e", pady=6)
+        self.has_downtime_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            body,
+            text="Had Downtime",
+            variable=self.has_downtime_var,
+            command=self._toggle_downtime_section,
+            bg=self.controller.colors["bg"],
+            fg=self.controller.colors["fg"],
+            activebackground=self.controller.colors["bg"],
+            activeforeground=self.controller.colors["fg"],
+        ).grid(row=4, column=0, sticky="w", pady=(10, 4))
+
+        self.downtime_section = tk.Frame(body, bg=self.controller.colors["bg"])
+        self.downtime_section.grid(row=5, column=0, columnspan=4, sticky="we")
+
+        tk.Label(self.downtime_section, text="Downtime Code:", **style).grid(row=0, column=0, sticky="e", pady=6)
         self.downtime_var = tk.StringVar(value="")
         codes = list_downtime_codes()
         self.downtime_options = []
@@ -104,45 +122,41 @@ class OperatorUI(tk.Frame):
             self.downtime_options.append(display)
             self.downtime_map[display] = code
         self.downtime_cb = ttk.Combobox(
-            body,
+            self.downtime_section,
             values=self.downtime_options,
             textvariable=self.downtime_var,
             state="readonly",
             width=32,
         )
-        self.downtime_cb.grid(row=4, column=1, sticky="w")
-        self.downtime_cb.bind("<<ComboboxSelected>>", self._toggle_downtime_fields)
+        self.downtime_cb.grid(row=0, column=1, sticky="w")
 
-        self.downtime_frame = tk.Frame(body, bg=self.controller.colors["bg"])
-        self.downtime_frame.grid(row=4, column=2, columnspan=2, sticky="w", padx=20)
+        tk.Label(self.downtime_section, text="Total Time (min):", **style).grid(row=0, column=2, sticky="w")
+        self.dt_total_entry = tk.Entry(self.downtime_section, width=10)
+        self.dt_total_entry.grid(row=0, column=3, padx=(6, 12))
 
-        tk.Label(self.downtime_frame, text="Total Time (min):", **style).grid(row=0, column=0, sticky="w")
-        self.dt_total_entry = tk.Entry(self.downtime_frame, width=10)
-        self.dt_total_entry.grid(row=0, column=1, padx=(6, 12))
+        tk.Label(self.downtime_section, text="# Occurrences:", **style).grid(row=0, column=4, sticky="w")
+        self.dt_occ_entry = tk.Entry(self.downtime_section, width=10)
+        self.dt_occ_entry.grid(row=0, column=5, padx=(6, 12))
 
-        tk.Label(self.downtime_frame, text="# Occurrences:", **style).grid(row=0, column=2, sticky="w")
-        self.dt_occ_entry = tk.Entry(self.downtime_frame, width=10)
-        self.dt_occ_entry.grid(row=0, column=3, padx=(6, 12))
-
-        tk.Label(self.downtime_frame, text="Comments:", **style).grid(row=0, column=4, sticky="w")
-        self.dt_comment_entry = tk.Entry(self.downtime_frame, width=28)
-        self.dt_comment_entry.grid(row=0, column=5, padx=(6, 0))
+        tk.Label(self.downtime_section, text="Comments:", **style).grid(row=0, column=6, sticky="w")
+        self.dt_comment_entry = tk.Entry(self.downtime_section, width=28)
+        self.dt_comment_entry.grid(row=0, column=7, padx=(6, 0))
 
         tk.Button(
-            self.downtime_frame,
+            self.downtime_section,
             text="Add Downtime",
             command=self.add_downtime_entry,
             bg="#17a2b8",
             fg="white",
-        ).grid(row=0, column=6, padx=(12, 0))
+        ).grid(row=0, column=8, padx=(12, 0))
 
         tk.Button(
-            self.downtime_frame,
+            self.downtime_section,
             text="Remove Selected",
             command=self.remove_downtime_entry,
             bg="#dc3545",
             fg="white",
-        ).grid(row=0, column=7, padx=(8, 0))
+        ).grid(row=0, column=9, padx=(8, 0))
 
         self.downtime_tree = ttk.Treeview(
             body,
@@ -151,16 +165,16 @@ class OperatorUI(tk.Frame):
             height=6,
         )
         for col, width in (
-            ("code", 160),
+            ("code", 180),
             ("minutes", 100),
-            ("occurrences", 110),
-            ("comments", 240),
+            ("occurrences", 120),
+            ("comments", 260),
         ):
             self.downtime_tree.heading(col, text=col.upper())
             self.downtime_tree.column(col, width=width)
-        self.downtime_tree.grid(row=5, column=0, columnspan=4, sticky="we", pady=(6, 10))
+        self.downtime_tree.grid(row=6, column=0, columnspan=4, sticky="we", pady=(6, 10))
 
-        self._toggle_downtime_fields()
+        self._toggle_downtime_section()
         self._refresh_line_dependent_fields()
 
         tk.Button(
@@ -171,69 +185,35 @@ class OperatorUI(tk.Frame):
             fg="white",
             font=("Arial", 12, "bold"),
             width=20,
-        ).grid(row=6, column=0, columnspan=4, pady=20, sticky="w")
+        ).grid(row=7, column=0, columnspan=4, pady=20, sticky="w")
 
-    def _build_shift_production(self, parent):
-        body = tk.Frame(parent, bg=self.controller.colors["bg"], padx=20, pady=20)
-        body.pack(fill="both", expand=True)
-
-        style = {"bg": self.controller.colors["bg"], "fg": self.controller.colors["fg"]}
-
-        tk.Label(body, text="Shift Production", font=("Arial", 16, "bold"), **style).grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 15)
-        )
-
-        tk.Label(body, text="Line:", **style).grid(row=1, column=0, sticky="e", pady=6)
-        line_options = list_lines()
-        if not line_options:
-            line_options = ["U725", "JL"]
-        self.shift_line_var = tk.StringVar(value=self.controller.user_line or line_options[0])
-        self.shift_line_cb = ttk.Combobox(body, values=line_options, state="readonly", width=18)
-        if self.shift_line_var.get() in line_options:
-            self.shift_line_cb.set(self.shift_line_var.get())
+    def _toggle_downtime_section(self):
+        if self.has_downtime_var.get():
+            self.downtime_section.grid()
+            self.downtime_tree.grid()
         else:
-            self.shift_line_cb.current(0)
-        self.shift_line_cb.grid(row=1, column=1, sticky="w")
-
-        tk.Label(body, text="Shift:", **style).grid(row=2, column=0, sticky="e", pady=6)
-        self.shift_var = tk.StringVar(value="1st")
-        self.shift_cb = ttk.Combobox(body, values=["1st", "2nd", "3rd"], state="readonly", width=18)
-        self.shift_cb.set(self.shift_var.get())
-        self.shift_cb.grid(row=2, column=1, sticky="w")
-
-        tk.Label(body, text="Production Qty:", **style).grid(row=3, column=0, sticky="e", pady=6)
-        self.shift_qty_entry = tk.Entry(body, width=18)
-        self.shift_qty_entry.grid(row=3, column=1, sticky="w")
-
-        tk.Label(body, text="Downtime (min):", **style).grid(row=4, column=0, sticky="e", pady=6)
-        self.shift_downtime_entry = tk.Entry(body, width=18)
-        self.shift_downtime_entry.insert(0, "0")
-        self.shift_downtime_entry.grid(row=4, column=1, sticky="w")
-
-        tk.Button(
-            body,
-            text="Submit Shift Report",
-            command=self.submit_shift_report,
-            bg="#28a745",
-            fg="white",
-            font=("Arial", 12, "bold"),
-            width=20,
-        ).grid(row=6, column=0, columnspan=3, pady=20, sticky="w")
-
-    def _toggle_downtime_fields(self, event=None):
-        enabled = bool(self.downtime_var.get())
-        state = "normal" if enabled else "disabled"
-        for entry in (self.dt_total_entry, self.dt_occ_entry, self.dt_comment_entry):
-            entry.configure(state=state)
-            if not enabled:
+            self.downtime_var.set("")
+            for entry in (self.dt_total_entry, self.dt_occ_entry, self.dt_comment_entry):
                 entry.delete(0, "end")
+            for row in self.downtime_tree.get_children():
+                self.downtime_tree.delete(row)
+            self.downtime_section.grid_remove()
+            self.downtime_tree.grid_remove()
 
+    def _refresh_line_dependent_fields(self, event=None):
+        line = self.shift_line_cb.get().strip()
         cells = list_cells_for_line(line)
         self.cell_cb.configure(values=cells)
         if cells:
             self.cell_cb.set(cells[0])
         else:
             self.cell_cb.set("")
+        parts = list_parts_for_line(line)
+        self.part_cb.configure(values=parts)
+        if parts:
+            self.part_cb.set(parts[0])
+        else:
+            self.part_cb.set("")
         self._refresh_machine_options()
 
     def _refresh_machine_options(self, event=None):
@@ -246,10 +226,42 @@ class OperatorUI(tk.Frame):
         else:
             self.machine_cb.set("")
 
+    def add_downtime_entry(self):
+        if not self.has_downtime_var.get():
+            messagebox.showerror("No Downtime", "Check 'Had Downtime' to add entries.")
+            return
+        display = self.downtime_var.get().strip()
+        if not display:
+            messagebox.showerror("Missing Info", "Select a downtime code.")
+            return
+        minutes = safe_float(self.dt_total_entry.get(), 0.0)
+        if minutes <= 0:
+            messagebox.showerror("Missing Info", "Enter downtime minutes.")
+            return
+        occurrences = safe_int(self.dt_occ_entry.get(), 0)
+        comments = self.dt_comment_entry.get().strip()
+        self.downtime_tree.insert(
+            "",
+            "end",
+            values=(display, f"{minutes:.1f}", occurrences, comments),
+        )
+        self.downtime_var.set("")
+        self.dt_total_entry.delete(0, "end")
+        self.dt_occ_entry.delete(0, "end")
+        self.dt_comment_entry.delete(0, "end")
+
+    def remove_downtime_entry(self):
+        sel = self.downtime_tree.selection()
+        if not sel:
+            return
+        for item in sel:
+            self.downtime_tree.delete(item)
+
     def submit_shift_report(self):
         line = self.shift_line_cb.get().strip()
         cell = self.cell_cb.get().strip()
         part_number = self.part_cb.get().strip()
+        machine = self.machine_cb.get().strip()
         qty = safe_int(self.shift_qty_entry.get(), 0)
         if not line:
             messagebox.showerror("Missing Info", "Select a line.")
@@ -264,11 +276,25 @@ class OperatorUI(tk.Frame):
             messagebox.showerror("Missing Info", "Enter the production quantity.")
             return
 
-        downtime_display = self.downtime_var.get().strip()
-        downtime_code = self.downtime_map.get(downtime_display, "")
-        dt_total = safe_float(self.dt_total_entry.get(), 0.0) if downtime_code else 0.0
-        dt_occ = safe_int(self.dt_occ_entry.get(), 0) if downtime_code else 0
-        dt_comments = self.dt_comment_entry.get().strip() if downtime_code else ""
+        downtime_entries = []
+        downtime_total = 0.0
+        if self.has_downtime_var.get():
+            for row in self.downtime_tree.get_children():
+                display, minutes, occurrences, comments = self.downtime_tree.item(row, "values")
+                code = self.downtime_map.get(display, display.split(" - ")[0])
+                entry_minutes = safe_float(minutes, 0.0)
+                downtime_total += entry_minutes
+                downtime_entries.append(
+                    {
+                        "code": code,
+                        "minutes": entry_minutes,
+                        "occurrences": safe_int(occurrences, 0),
+                        "comments": comments or "",
+                    }
+                )
+            if not downtime_entries:
+                messagebox.showerror("Missing Info", "Add at least one downtime entry.")
+                return
 
         now = datetime.now()
         entry_id = f"SP-{now.strftime('%Y%m%d-%H%M%S')}"
@@ -279,14 +305,11 @@ class OperatorUI(tk.Frame):
             "Shift": self.shift_cb.get(),
             "Line": line,
             "Cell": cell,
-            "Machine": self.machine_cb.get().strip(),
+            "Machine": machine,
             "Part_Number": part_number,
             "Tool_Num": "",
             "Reason": "Shift Production",
-            "Downtime_Mins": dt_total,
-            "Downtime_Code": downtime_code,
-            "Downtime_Occurrences": dt_occ,
-            "Downtime_Comments": dt_comments,
+            "Downtime_Mins": downtime_total,
             "Production_Qty": float(qty),
             "Cost": 0.0,
             "Tool_Life": 0.0,
@@ -304,52 +327,11 @@ class OperatorUI(tk.Frame):
             "Serial_Numbers": "",
         }
         upsert_tool_entry(new_row)
+        if downtime_entries:
+            replace_shift_downtime_entries(entry_id, downtime_entries)
         log_audit(self.controller.user, f"Shift production entry {entry_id} saved")
 
         messagebox.showinfo("Saved", "Shift production report submitted for leader signoff.")
         self.shift_qty_entry.delete(0, "end")
-        self.downtime_var.set("")
-        self._toggle_downtime_fields()
-
-    def submit_shift_report(self):
-        qty = safe_int(self.shift_qty_entry.get(), 0)
-        if qty <= 0:
-            messagebox.showerror("Missing Info", "Enter the production quantity.")
-            return
-        downtime = safe_float(self.shift_downtime_entry.get(), 0.0)
-        now = datetime.now()
-        entry_id = f"SP-{now.strftime('%Y%m%d-%H%M%S')}"
-        new_row = {
-            "ID": entry_id,
-            "Date": now.strftime("%Y-%m-%d"),
-            "Time": now.strftime("%H:%M:%S"),
-            "Shift": self.shift_cb.get(),
-            "Line": self.shift_line_cb.get(),
-            "Machine": "",
-            "Part_Number": "",
-            "Tool_Num": "",
-            "Reason": "Shift Production",
-            "Downtime_Mins": downtime,
-            "Production_Qty": float(qty),
-            "Cost": 0.0,
-            "Tool_Life": 0.0,
-            "Tool_Changer": self.controller.user or "",
-            "Defects_Present": "No",
-            "Defect_Qty": 0,
-            "Sort_Done": "No",
-            "Defect_Reason": "",
-            "Quality_Verified": "N/A",
-            "Quality_User": "",
-            "Quality_Time": "",
-            "Leader_Sign": "Pending",
-            "Leader_User": "",
-            "Leader_Time": "",
-            "Serial_Numbers": "",
-        }
-        upsert_tool_entry(new_row)
-        log_audit(self.controller.user, f"Shift production entry {entry_id} saved")
-
-        messagebox.showinfo("Saved", "Shift production report submitted for leader signoff.")
-        self.shift_qty_entry.delete(0, "end")
-        self.shift_downtime_entry.delete(0, "end")
-        self.shift_downtime_entry.insert(0, "0")
+        self.has_downtime_var.set(False)
+        self._toggle_downtime_section()
